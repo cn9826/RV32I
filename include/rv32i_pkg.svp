@@ -1,0 +1,50 @@
+//=================================================================================================
+// File: rv32i_pkg.svp
+//
+// Description: RISCV-32I Core package
+//
+// Date Created: 08/13/2023
+//
+// Author: Can Ni cni96@outlook.com 
+//=================================================================================================
+`ifndef _RV32I_PKG_SVP_
+`define _RV32I_PKG_SVP_
+
+package rv32i_pkg;
+
+
+//=================================================================================================
+// Architectural Constants
+//=================================================================================================
+localparam int NUM_ARCH_REG_FILES = 32;
+localparam int REG_FILE_BW  = 32;
+
+localparam int ARCH_REG_FILE_IDX_BW = $clog2(NUM_ARCH_REG_FILES);
+//=============================================END=================================================
+
+
+//=================================================================================================
+// Implementation Constants
+//=================================================================================================
+
+// Number of physical register files
+localparam int NUM_PHYS_REG_FILES = 32;
+
+// reordering buffer FIFO depth
+localparam int ROB_DEPTH = 16;
+
+localparam int PHYS_REG_FILE_IDX_BW = $clog2(NUM_PHYS_REG_FILES);
+
+// PU IDs
+localparam int NUM_PUS = 2; 
+localparam int ADD_PU_ID  = 0; 
+localparam int MULT_PU_ID = 1; 
+//localparam int LSU_PU_ID  = 2;  // LSU in execute stage uses arithemtic to calculate memory addresses   
+localparam int PU_ID_BW   = $clog2(NUM_PUS); 
+
+
+//=============================================END=================================================
+
+
+endpackage
+`endif
