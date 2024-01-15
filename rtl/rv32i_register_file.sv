@@ -61,7 +61,7 @@ localparam int TAG_STACK_PTR_BW = $clog2(TAG_STACK_DEPTH);
 // Local Declarations 
 //=================================================================================================
 
-// Register Alias Table Tag field
+// Register Alias Table Tag field, speculative future tag
 logic [NUM_ARCH_REG_FILES-1:0][PHYS_REG_FILE_IDX_BW-1:0]  rat_tag_r;
 
 // Register Alias Table Committed field
@@ -82,7 +82,20 @@ logic                                                     tag_stack_pop_data_vld
 logic [NUM_PHYS_REG_FILES-1:0]                            phys_rf_vld_r;
 
 // Instantiation of Physical RF array
-logic [NUM_PHYS_REG_FILES-1:0][REG_FILE_BW-1:0]           phys_rf_array; 
+logic [NUM_PHYS_REG_FILES-1:0][REG_FILE_BW-1:0]           phys_rf_array;
+
+
+// Register Alias Table committed tag field. This represents the last tag for an Arch RF
+// that is used to retire an instr that writes to this Arch RF.
+// When an exception occurs, for all arch_rf_idx that rat_committed_r[arch_rf_idx] != 1'b1,
+// rat_tag_r[arch_rf_idx] <= rat_committed_tag_r[arch_rf_idx];
+// phys_rf_array[rat_committed_tag_r[arch_rf_idx]] <= arch_rf_array[arch_rf_idx] 
+logic [NUM_ARCH_REG_FILES-1:0][PHYS_REG_FILE_IDX_BW-1:0]  rat_committed_tag_r;
+
+// Instantiation of Arch RF array that holds the value as a result of
+// ROB in-order retirement. This is the actual value Arch RF should appear
+// to have if instructions are retired in order 
+logic [NUM_ARCH_REG_FILES-1:0][REG_FILE_BW-1:0]           arch_rf_array;
 
 //============================================END==================================================
 
