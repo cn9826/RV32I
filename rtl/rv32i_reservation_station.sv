@@ -124,6 +124,8 @@ always_comb begin
     pop = i_pu_rdy;
   end
 
+end
+
 assign fast_forward_on_empty = i_push & o_empty & i_src1_value_vld & i_src2_value_vld;   
 
 assign o_full  = (wr_ptr[PTR_BW-2:0] == rd_ptr[PTR_BW-2:0]) &  (wr_ptr[PTR_BW-1]^rd_ptr[PTR_BW-1]); 

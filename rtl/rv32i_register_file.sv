@@ -29,9 +29,12 @@ import rv32i_pkg::*;
   input  logic [ARCH_REG_FILE_IDX_BW-1:0]   i_dst_arch_rf_idx, 
 
   // Inputs from ROB to update RAT
-  // A tag is freed to use when in the RAT, Arch RF - Phys RF entry indicates committed
-  // And then a new instruction with the same Arch RF comes 
+  // A tag is freed to use when in the RAT, an Arch RF a more recent tag, but the retiring 
+  // instr with the same Arch RF carries a different older tag. This older tag can be freed 
   input  logic                              i_retire,
+  input  logic                              i_except_vld, // MUTEX with i_retire
+  input  logic                              i_rob_flush,  // Flush all ROB entries after exception-triggering one
+                                                          // to free Phys tags
   input  logic                              i_retire_dst_vld,
   input  logic [ARCH_REG_FILE_IDX_BW-1:0]   i_retire_arch_rf_idx,
   input  logic [PHYS_REG_FILE_IDX_BW-1:0]   i_retire_phys_rf_idx,
@@ -50,6 +53,9 @@ import rv32i_pkg::*;
   // returned DST Alias
   output logic                              o_dst_phys_rf_tag_vld,
   output logic [PHYS_REG_FILE_IDX_BW-1:0]   o_dst_phys_rf_tag_idx,
+  
+  // exception process in progress
+  output logic                              o_except_proc_in_prog,
 
   output logic                              o_phys_rf_tag_avail
 );
@@ -89,7 +95,8 @@ logic [NUM_PHYS_REG_FILES-1:0][REG_FILE_BW-1:0]           phys_rf_array;
 // that is used to retire an instr that writes to this Arch RF.
 // When an exception occurs, for all arch_rf_idx that rat_committed_r[arch_rf_idx] != 1'b1,
 // rat_tag_r[arch_rf_idx] <= rat_committed_tag_r[arch_rf_idx];
-// phys_rf_array[rat_committed_tag_r[arch_rf_idx]] <= arch_rf_array[arch_rf_idx] 
+// phys_rf_array[rat_committed_tag_r[arch_rf_idx]] <= arch_rf_array[arch_rf_idx]
+logic [NUM_ARCH_REG_FILES-1:0]                            rat_committed_tag_vld_r;
 logic [NUM_ARCH_REG_FILES-1:0][PHYS_REG_FILE_IDX_BW-1:0]  rat_committed_tag_r;
 
 // Instantiation of Arch RF array that holds the value as a result of
@@ -97,6 +104,15 @@ logic [NUM_ARCH_REG_FILES-1:0][PHYS_REG_FILE_IDX_BW-1:0]  rat_committed_tag_r;
 // to have if instructions are retired in order 
 logic [NUM_ARCH_REG_FILES-1:0][REG_FILE_BW-1:0]           arch_rf_array;
 
+
+// Except handling process signals
+logic                            except_proc_in_prog;
+logic [ARCH_REG_FILE_IDX_BW-1:0] except_proc_arch_rf_idx;
+logic [NUM_ARCH_REG_FILES-1:0]   except_proc_arch_rf_bmap_s; 
+logic [NUM_ARCH_REG_FILES-1:0]   except_proc_arch_rf_bmap_r;
+logic [ARCH_REG_FILE_IDX_BW-1:0] tod_pos; 
+logic [NUM_ARCH_REG_FILES-1:0]   tod_pos_mask_s, tod_pos_mask_r;
+logic                            tod_all_zero; 
 //============================================END==================================================
 
 
@@ -111,17 +127,22 @@ assign o_phys_rf_tag_avail = ~tag_stack_empty;
 assign tag_stack_ptr_m1 = tag_stack_ptr - 1'b1; 
 
 // LIFO Pop on Dispatcher DST consultation; 
-// LIFO Push to reclaim a previously committed Phys Tag when ROB retires a DST with a Phys Tag that is not the most up-to-date, i.e.,
-// ROB retires an old Phys Tag != most up-to-date Phys Tag, then this old Phys Tag can be reclaimed  
+// LIFO Push to reclaim a previously committed Phys Tag for this Arch RF when ROB retires a 
+// more recent instr with DST = Arch RF 
 assign tag_stack_pop  = o_phys_rf_tag_avail & i_pre_dispatch & i_dst_arch_rf_vld;
-//assign tag_stack_push = i_pre_dispatch & i_dst_arch_rf_vld & rat_committed_r[i_dst_arch_rf_idx];
-//assign tag_to_free    = tag_stack_push ? rat_tag_r[i_dst_arch_rf_idx] : '0; 
-assign tag_stack_push = i_retire & i_retire_dst_vld & (i_retire_phys_rf_idx != rat_tag_r[i_retire_arch_rf_idx]);
-assign tag_to_free    = tag_stack_push ? i_retire_phys_rf_idx : '0;
+assign tag_stack_push = 
+  (i_retire & i_retire_dst_vld & rat_committed_tag_vld_r[i_retire_arch_rf_idx]) |
+  ((i_rob_flush | i_except_vld) & i_retire_dst_vld);
+assign tag_to_free    = 
+  tag_stack_push ? 
+  (!(i_rob_flush | i_except_vld) ? 
+   rat_committed_tag_r[i_retire_arch_rf_idx] : 
+   i_retire_phys_rf_idx                     ): 
+  '0                                         ;
 always_ff @(posedge clk) begin
   if (!rstn) begin
     for (int i=0; i<TAG_STACK_DEPTH; i++) begin
-      tag_stack_r[i] = PHYS_REG_FILE_IDX_BW'(i);
+      tag_stack_r[i] <= PHYS_REG_FILE_IDX_BW'(i);
     end
     tag_stack_ptr <= '0;
   end
@@ -282,44 +303,136 @@ end
 //=================================================================================================
 // RAT table assignemnt logic
 // Retire logic from ROB: if retire phys_rf_idx == rat_tag_r, mark as committed
-// Tag assignment is done upon tag_stack_pop 
+// Tag assignment is done upon tag_stack_pop
+// rat_committed_r can be used to skip over Arch RF's whose speculative value is the committed
 //=================================================================================================
 always_ff @(posedge clk) begin
   if (!rstn) begin
-    rat_committed_r <= '0;
+    rat_committed_r         <= '0;
+    rat_committed_tag_vld_r <= '0;
   end
   else if (tag_stack_pop) begin
+    if (i_retire & !i_rob_flush & i_retire_dst_vld) begin
+      rat_committed_r[i_retire_arch_rf_idx]  <= 
+        (i_retire_phys_rf_idx == rat_tag_r[i_retire_arch_rf_idx]);
+      rat_committed_tag_vld_r[i_retire_arch_rf_idx] <= 1'b1; 
+      rat_committed_tag_r[i_retire_arch_rf_idx] <= i_retire_phys_rf_idx;   
+    end
     rat_committed_r[i_dst_arch_rf_idx] <= 1'b0;
-    rat_tag_r[i_dst_arch_rf_idx] <= tag_stack_r[tag_stack_ptr];
+    rat_tag_r[i_dst_arch_rf_idx]       <= tag_stack_r[tag_stack_ptr];
   end
-  else if (i_retire & i_retire_dst_vld) begin
-    rat_committed_r[i_dst_arch_rf_idx] <= (i_retire_phys_rf_idx == rat_tag_r[i_retire_arch_rf_idx]);
+  else if (i_retire & !i_rob_flush & i_retire_dst_vld) begin
+    rat_committed_r[i_retire_arch_rf_idx]  <= 
+      (i_retire_phys_rf_idx == rat_tag_r[i_retire_arch_rf_idx]);
+    rat_committed_tag_vld_r[i_retire_arch_rf_idx] <= 1'b1; 
+    rat_committed_tag_r[i_retire_arch_rf_idx] <= i_retire_phys_rf_idx;   
+  end
+  // if exception proc ongoing, all rat_committed_r should be set to 1'b1, and 
+  // rat_tag_r[arch_rf_idx] <= rat_committed_tag_r[arch_rf_idx]  
+  else if (i_except_vld || except_proc_in_prog) begin
+    rat_committed_r[tod_pos] <= 1'b1;
+    rat_tag_r      [tod_pos] <= rat_committed_tag_r[tod_pos]; 
   end
 end
 //============================================END==================================================
 
 
+//=================================================================================================
+// Assign instantiated Arch RF Array upon ROB retirement. A ROB retirement is considered a commit
+// to Arch RF state.
+//=================================================================================================
+always_ff @(posedge clk) begin
+  // retire always occurs later than Phys RF WB
+  if (i_retire & !i_rob_flush) begin
+    arch_rf_array[i_retire_arch_rf_idx] <= phys_rf_array[i_retire_phys_rf_idx];
+  end
+end
+//============================================END==================================================
 
 
 //=================================================================================================
-// Write back logic 
+// Exception handling process
+//=================================================================================================
+always_comb begin
+  except_proc_arch_rf_bmap_s = except_proc_arch_rf_bmap_r;
+  if (i_except_vld) begin
+    // only for Arch RFs that have had valid commits previously need to be corrected
+    // and take on their most-recent commit value
+    except_proc_arch_rf_bmap_s = ~rat_committed_r & rat_committed_tag_vld_r; 
+  end
+  else if (except_proc_in_prog) begin
+    except_proc_arch_rf_bmap_s = except_proc_arch_rf_bmap_r & ~tod_pos_mask_r; 
+  end
+end
+
+assign o_except_proc_in_prog = except_proc_in_prog;
+always_ff @(posedge clk) begin
+  if (!rstn) begin
+    except_proc_in_prog        <= 1'b0;
+    except_proc_arch_rf_bmap_r <= '1;
+    tod_pos_mask_r             <= 1'b0;
+  end
+  else begin
+    if (i_except_vld) begin
+      except_proc_in_prog <= 1'b1;
+    end
+    else if (except_proc_in_prog && tod_all_zero) begin
+      except_proc_in_prog <= 1'b0; 
+    end
+
+    if (i_except_vld || except_proc_in_prog) begin
+      except_proc_arch_rf_bmap_r <= except_proc_arch_rf_bmap_s;
+      tod_pos_mask_r             <= tod_pos_mask_s;
+    end
+  end
+end
+
+one_detector #(
+  .VEC_LEN              (NUM_ARCH_REG_FILES)
+) u_except_proc_tod (
+  .i_in_vec             (except_proc_arch_rf_bmap_s),
+  .o_pos                (tod_pos),
+  .o_pos_mask           (tod_pos_mask_s),
+  .o_all_zero           (tod_all_zero)
+);
+
+//---------------------------------------------------------------------
+// Use tod_pos as arch_rf_idx to 
+// phys_rf_array[rat_committed_tag_r[arch_rf_idx]] <= 
+// arch_rf_array[arch_rf_idx] 
+//---------------------------------------------------------------------
+
+//============================================END==================================================
+
+
+//=================================================================================================
+// Write back and exceptiong handling logic to assign phys_rf_array 
 //=================================================================================================
 always_ff @(posedge clk) begin
   if (!rstn) begin
     phys_rf_vld_r <= '0;
     phys_rf_array <= '0;
   end
+  else if (i_except_vld || except_proc_in_prog) begin
+    phys_rf_vld_r[rat_committed_tag_r[tod_pos]] <= 1'b1;
+    phys_rf_array[rat_committed_tag_r[tod_pos]] <= arch_rf_array[tod_pos]; 
+  end
   else if (tag_stack_pop) begin
     if (i_wen) begin
       phys_rf_vld_r[i_phys_rf_wr_idx] <= 1'b1;
       phys_rf_array[i_phys_rf_wr_idx] <= i_wdata;
     end
-    phys_rf_vld_r[tag_stack_r[tag_stack_ptr]] <= 1'b0; 
+    phys_rf_vld_r[tag_stack_r[tag_stack_ptr]] <= 1'b0;
   end
   else if (i_wen) begin
     phys_rf_vld_r[i_phys_rf_wr_idx] <= 1'b1;
     phys_rf_array[i_phys_rf_wr_idx] <= i_wdata;
   end
+  // when a Phys Tag is freed, invalidate its content, may be unnecessary
+  // since upon pop, Phys RF already invalidated 
+  //else if (tag_stack_push) begin
+  //  phys_rf_vld_r[tag_to_free] <= 1'b0;
+  //end
 end
 //============================================END==================================================
 

@@ -26,7 +26,7 @@ initial begin
   #1.1;
   rstn = 1'b1;
 
-  // R1 = R0 + 7
+  // 0: R1 = R0 + 7
   @(posedge clk);
   #0.1;
   i_decode_vld = 1'b1;
@@ -39,7 +39,7 @@ initial begin
   i_rd_vld = 1'b1;
   i_dst_arch_rf_idx = ARCH_REG_FILE_IDX_BW'(1);
 
-  // R1 = R1 + R1
+  // 1: R1 = R1 + R1
   @(posedge clk);
   #0.1;
   i_decode_vld = 1'b1;
@@ -52,7 +52,7 @@ initial begin
   i_rd_vld = 1'b1;
   i_dst_arch_rf_idx = ARCH_REG_FILE_IDX_BW'(1);
 
-  // R2 = R1 * (-3) 
+  // 2: R2 = R1 * (-3) 
   @(posedge clk);
   #0.1;
   i_decode_vld = 1'b1;
@@ -65,7 +65,7 @@ initial begin
   i_rd_vld = 1'b1;
   i_dst_arch_rf_idx = ARCH_REG_FILE_IDX_BW'(2);
 
-  // R2 = R1 + 40  
+  // 3: R2 = R1 + 40  
   @(posedge clk);
   #0.1;
   i_decode_vld = 1'b1;
@@ -78,7 +78,7 @@ initial begin
   i_rd_vld = 1'b1;
   i_dst_arch_rf_idx = ARCH_REG_FILE_IDX_BW'(2);
 
-  // R2 = R1 - 100
+  // 4: R2 = R1 - 100
   @(posedge clk);
   #0.1;
   i_decode_vld = 1'b1;
@@ -92,7 +92,7 @@ initial begin
   i_dst_arch_rf_idx = ARCH_REG_FILE_IDX_BW'(2);
   
   
-  // R2 = R1 + 100
+  // 5: R2 = R1 + 100
   @(posedge clk);
   #0.1;
   i_decode_vld = 1'b1;
@@ -106,7 +106,7 @@ initial begin
   i_dst_arch_rf_idx = ARCH_REG_FILE_IDX_BW'(2);
 
   
-  // R1 = R1 - 40  
+  // 6: R1 = R1 - 40  
   @(posedge clk);
   #0.1;
   i_decode_vld = 1'b1;

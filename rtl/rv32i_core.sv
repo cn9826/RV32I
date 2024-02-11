@@ -39,6 +39,9 @@ import rv32i_pkg::*;
 // Local Declarations 
 //=================================================================================================
 
+// Decode-to-Dispatch I/F taking into account except_vld from ROB
+logic                              decode_vld;
+
 // Dispatch Stage output to RF
 logic                              pre_dispatch; 
 logic                              ren_src1;
@@ -85,6 +88,7 @@ logic                              write_back;
 logic [PHYS_REG_FILE_IDX_BW-1:0]   wb_phys_rf_wr_idx;
 logic [$clog2(ROB_DEPTH)-1:0]      wb_rob_entry_idx;
 logic [REG_FILE_BW-1:0]            wb_data;
+logic                              wb_except_vld;
 logic [NUM_PUS-1:0]                wb_rdy; // write back arbiter is ready to grant to a specific PU
 logic [NUM_PUS-1:0]                               wb_req;
 logic [NUM_PUS-1:0][PHYS_REG_FILE_IDX_BW-1:0]     wb_req_dst_phys_rf_tag;
@@ -97,6 +101,8 @@ logic [NUM_PUS-1:0]                               wb_grant;
 logic                              rob_full;
 logic                              rob_empty;
 logic                              retire;
+logic                              except_vld;
+logic                              rob_flush;
 logic                              retire_dst_vld;
 logic [PHYS_REG_FILE_IDX_BW-1:0]   retire_dst_phys_rf_tag;
 logic [ARCH_REG_FILE_IDX_BW-1:0]   retire_dst_arch_rf_idx;
@@ -121,6 +127,7 @@ logic [$clog2(ROB_DEPTH)-1:0]      mult_rsrv_sttn_rob_entry_idx;
 // PU signals
 logic [NUM_PUS-1:0]                pu_rdy;
 logic [NUM_PUS-1:0]                pu_vld;
+logic [NUM_PUS-1:0]                pu_except;
 logic [PHYS_REG_FILE_IDX_BW-1:0]   add_dst_phys_rf_tag;
 logic [$clog2(ROB_DEPTH)-1:0]      add_rob_entry_idx;
 logic [REG_FILE_BW-1:0]            add_result;
@@ -130,17 +137,25 @@ logic [REG_FILE_BW-1:0]            mult_result;
 
 // RF signals
 logic                              rf_phys_rf_tag_avail;
+
+// Exception handler signals
+logic                              rf_except_proc_in_prog;
+logic                              except_handler_in_prog;
+logic                              except_handler_done;
+
 //============================================END==================================================
 
 
 //=================================================================================================
 // Instantiate Dispatch Stage 
 //=================================================================================================
+assign decode_vld = ~except_handler_in_prog & i_decode_vld; 
 rv32i_dispatch u_dispatch (
   .clk,
   .rstn,
   
-  .i_decode_vld,
+  // Decode-to-Dispatch I/F
+  .i_decode_vld                   (decode_vld),
   .i_pu_id,
   .i_rs1_vld,
   .i_src1_arch_rf_idx,
@@ -260,7 +275,8 @@ rv32i_adder u_adder_pu (
   .o_vld                          (pu_vld[0]),
   .o_dst_phys_rf_tag              (add_dst_phys_rf_tag),
   .o_rob_entry_idx                (add_rob_entry_idx),
-  .o_sum                          (add_result)
+  .o_sum                          (add_result),
+  .o_overflow                     (pu_except[0])
 );
 
 //--------------------------------------------END--------------------------------------------------
@@ -321,6 +337,8 @@ rv32i_multiplier_pipelined u_mltplr_pu (
   .o_product                      (mult_result)
 );
 
+//FIXME: logic to detect overflow in multiplier
+assign pu_except[1] = 1'b0;
 //============================================END==================================================
 
 
@@ -350,10 +368,12 @@ always_comb begin
   wb_phys_rf_wr_idx = '0;
   wb_rob_entry_idx  = '0;
   wb_data       = '0;
+  wb_except_vld = '0;
   for (int i=0; i<NUM_PUS; i++) begin
     wb_phys_rf_wr_idx = wb_phys_rf_wr_idx | ({PHYS_REG_FILE_IDX_BW{wb_grant[i]}} & wb_req_dst_phys_rf_tag[i]);
     wb_rob_entry_idx  = wb_rob_entry_idx  | ({$clog2(ROB_DEPTH){wb_grant[i]}} & wb_req_rob_entry_idx[i]);
-    wb_data           = wb_data           | ({REG_FILE_BW{wb_grant[i]}} & wb_req_data[i]); 
+    wb_data           = wb_data           | ({REG_FILE_BW{wb_grant[i]}} & wb_req_data[i]);
+    wb_except_vld     = wb_except_vld     | (wb_grant[i] & wb_req[i] & pu_except[i]); 
   end
 end
 //============================================END==================================================
@@ -379,6 +399,8 @@ rv32i_register_file u_register_file
   .i_dst_arch_rf_idx        (dst_arch_rf_idx),
 
   .i_retire                 (retire),
+  .i_except_vld             (except_vld),
+  .i_rob_flush              (rob_flush),
   .i_retire_dst_vld         (retire_dst_vld),
   .i_retire_arch_rf_idx     (retire_dst_arch_rf_idx),
   .i_retire_phys_rf_idx     (retire_dst_phys_rf_tag),
@@ -394,6 +416,8 @@ rv32i_register_file u_register_file
 
   .o_dst_phys_rf_tag_vld    (dst_phys_rf_tag_vld),
   .o_dst_phys_rf_tag_idx    (dst_phys_rf_tag),
+
+  .o_except_proc_in_prog    (rf_except_proc_in_prog),
 
   .o_phys_rf_tag_avail      (rf_phys_rf_tag_avail)
 );
@@ -414,12 +438,17 @@ rv32i_reorder_buffer u_rob (
 
   .i_write_back                   (write_back),
   .i_write_back_rob_entry_idx     (wb_rob_entry_idx),
+  .i_write_back_except_vld        (wb_except_vld),
+
+  .i_except_handler_done          (except_handler_done),
 
   .o_rob_entry_idx                (dispatch_rob_entry_idx),
   .o_full                         (rob_full),
   .o_empty                        (rob_empty),
 
   .o_retire                       (retire),
+  .o_except_vld                   (except_vld),
+  .o_rob_flush                    (rob_flush),
   .o_dst_vld                      (retire_dst_vld),
   .o_retire_dst_phys_rf_tag       (retire_dst_phys_rf_tag),
   .o_retire_dst_arch_rf_idx       (retire_dst_arch_rf_idx)
@@ -429,5 +458,25 @@ rv32i_reorder_buffer u_rob (
 
 
 
+
+//=================================================================================================
+// Exception Handler 
+//=================================================================================================
+rv32i_except_handler u_except_handler 
+(
+  .clk,
+  .rstn,
+  
+  .i_rob_except_vld               (except_vld),
+  .i_rf_except_in_prog            (rf_except_proc_in_prog),
+  .i_rob_flush                    (rob_flush),
+  
+  .i_pu_rdy                       (pu_rdy),
+  .i_pu_vld                       (pu_vld), 
+
+  .o_in_prog                      (except_handler_in_prog),
+  .o_done                         (except_handler_done)
+);
+//============================================END==================================================
 
 endmodule

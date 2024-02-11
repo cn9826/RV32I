@@ -8,6 +8,8 @@ iverilog -g2012 -I ../include \
   ../rtl/rv32i_reorder_buffer.sv \
   ../rtl/rv32i_dispatch.sv \
   ../rtl/round_robin_arbiter.sv \
+  ../rtl/one_detector.sv \
+  ../rtl/rv32i_except_handler.sv \
   ../rtl/rv32i_core.sv \
   ./rv32i_core_tb.sv \
 

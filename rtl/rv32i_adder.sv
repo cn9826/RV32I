@@ -27,11 +27,14 @@ import rv32i_pkg::*;
   output logic                                o_vld,
   output logic [PHYS_REG_FILE_IDX_BW-1:0]     o_dst_phys_rf_tag,
   output logic [$clog2(ROB_DEPTH)-1:0]        o_rob_entry_idx,
-  output logic signed [31:0]                  o_sum
+  output logic signed [31:0]                  o_sum,
+  output logic                                o_overflow
 );
 
 logic signed [32:0] sum;
+logic signed [31:0] b; 
 assign o_rdy = ~(o_vld & ~i_rdy);
+assign b = i_sub_flag ? -i_b : i_b;
 
 always_ff @(posedge clk) begin
   if (!rstn) begin
@@ -52,13 +55,14 @@ always_ff @(posedge clk) begin
     o_rob_entry_idx   <= '0;
   end
   else if (i_vld && o_rdy) begin
-    sum               <= i_sub_flag ? i_a - i_b : i_a + i_b;
+    sum               <= i_a + b;
     o_dst_phys_rf_tag <= i_dst_phys_rf_tag;
     o_rob_entry_idx   <= i_rob_entry_idx;
   end
 end
 
 assign o_sum = sum[31:0];
-
+assign o_overflow = 
+  ~i_a[31] & ~b[31] & sum[31] | i_a[31] & b[31] & ~sum[31]; 
 
 endmodule
